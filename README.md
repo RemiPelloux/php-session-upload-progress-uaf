@@ -128,6 +128,12 @@ Measured, not assumed (`docs/03-validation.md` §3.9):
   multi-megabyte multipart part at all — which is the gate the arm request has
   to cross.
 
+A `4xx` from the application is **not** a refusal of the body. PHP parses
+multipart during request startup, so by the time a router answers `405` or `419`
+the rfc1867 callback has already run. Measured on a live Laravel host: `POST /`
+returns `405` while a 64 MB filename still reaches `memory_limit`. Only the
+proxy-level caps (`413`, `414`, `431`) mean the part never arrived.
+
 So `NOT_DETECTED` and `LIKELY_EXPOSED` are both weak statements. If you own the
 host, read the ini. If you are testing under authorisation, stage 2 is the only
 definitive answer.
@@ -166,6 +172,32 @@ Read the result honestly — three outcomes look alike and mean different things
 
 `--arm-bytes` is a heap-shaping parameter, not a "make it bigger" knob:
 `2000000` aborts on the reference build, `2**21` does not (`docs/02-heap-layout.md` §2.8).
+
+### Finding the fatal without firing
+
+The OOM size depends on `memory_limit`, which you cannot read from outside — so
+escalate and let the error tell you:
+
+```bash
+python3 tools/remote_probe.py --host your-staging-host \
+        --sizes 32000000,64000000 --timeout 180 --log arm.log
+python3 tools/remote_probe.py --host your-staging-host \
+        --arm 64000000 --fast-fires 16 --timeout 180 --log fire.log
+```
+
+On a real host with `memory_limit=256M` that produced, at a 64 MB filename:
+
+```
+Fatal error: Allowed memory size of 268435456 bytes exhausted
+             (tried to allocate 64000032 bytes) in Unknown on line 0
+```
+
+`64000032` = the filename + a 32-byte `zend_string` header, i.e. the
+serializer's own copy of `progress->data`; `Unknown on line 0` places it in
+request startup. That single line proves the pre-RINIT bailout on a host you do
+not control. Whether the *next* request reuses the freed context depends on
+landing on the same worker (`pm.max_children`) and on the allocator — the
+`--fast-fires` mode sends many small fires after one arm for that reason.
 
 ## 1. The window: why this runs before RINIT
 
@@ -422,6 +454,7 @@ docs/02-heap-layout.md     the 64-byte bin, why 22..29, what reclaims it
 docs/03-validation.md      methodology, claims table, what would falsify this
 docs/04-mitigation.md      longer treatment: stopgap, detection, upstream fix
 tools/check_url.py         scan a URL (stage 1 safe, stage 2 gated)
+tools/remote_probe.py      escalate the arm size on one host, then fire
 tools/check_exposure.py    read a php.ini and say EXPOSED / MITIGATED
 tools/scan_logs.sh         grep journals for the two-line fingerprint
 lab/poc.py                 arm + fire, PASS/FAIL, portable

@@ -237,15 +237,25 @@ def stage1(t: Target, max_part: int) -> dict:
     big_name = "F" * max_part
     body_big, ctype_big = multipart("uafcheck-token", big_name, sid=sid)
     big = post_multipart(t, body_big, ctype_big, sid)
-    accepted = big.ok and big.status is not None and big.status < 400
+    # A 4xx is NOT a rejection of the body: PHP parses multipart during request
+    # startup, so by the time Laravel answers 405/419/422 the rfc1867 callback
+    # has already run. Measured on dev-api.openpro.ai: POST / returns 405 with
+    # the part fully parsed, and a 64 MB filename still reaches memory_limit.
+    # Only the proxy-level body-cap answers mean the part never arrived.
+    edge_refused = big.ok and big.status in (413, 414, 431)
+    accepted = big.ok and big.status is not None and not edge_refused and big.status < 500
     r["signals"]["large_part"] = {
         "status": big.status, "error": big.error,
         "part_bytes": max_part, "accepted": accepted,
+        "edge_refused": edge_refused,
         "elapsed_ms": round(big.elapsed * 1000),
     }
-    if big.ok and big.status in (413, 414, 431):
+    if edge_refused:
         r["notes"].append(f"edge rejected the oversized part with HTTP {big.status} "
                           "— a large-filename arm request will not reach PHP")
+    elif big.ok and big.status and 400 <= big.status < 500:
+        r["notes"].append(f"HTTP {big.status} came from the application, not the proxy: the body "
+                          "was parsed before routing, so this does not rule the handler out")
 
     # is it PHP at all?
     cookies = " ".join(base.cookies() + prog.cookies())
@@ -273,8 +283,8 @@ def stage1(t: Target, max_part: int) -> dict:
     elif not accepted:
         r["verdict"] = "NOT_DETECTED"
         r["confidence"] = "medium"
-        r["notes"].append("PHP detected but the edge will not carry a large part; the arm "
-                          "request cannot build a large progress array through this path")
+        r["notes"].append("PHP detected but the large part was refused before it reached PHP; "
+                          "the arm request cannot build a large progress array through this path")
     else:
         r["verdict"] = "LIKELY_EXPOSED"
         r["confidence"] = "low"
