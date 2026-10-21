@@ -173,31 +173,46 @@ Read the result honestly — three outcomes look alike and mean different things
 `--arm-bytes` is a heap-shaping parameter, not a "make it bigger" knob:
 `2000000` aborts on the reference build, `2**21` does not (`docs/02-heap-layout.md` §2.8).
 
-### Finding the fatal without firing
+### Finding the fatal without firing — and why the fatal alone proves nothing
 
-The OOM size depends on `memory_limit`, which you cannot read from outside — so
-escalate and let the error tell you:
+The OOM size depends on `memory_limit`, which you cannot read from outside, so
+escalate and let the error tell you. **But read the allocation size, not just the
+message.** `alloc - len(filename)` says which allocation died:
 
-```bash
-python3 tools/remote_probe.py --host your-staging-host \
-        --sizes 32000000,64000000 --timeout 180 --log arm.log
-python3 tools/remote_probe.py --host your-staging-host \
-        --arm 64000000 --fast-fires 16 --timeout 180 --log fire.log
-```
+| delta | allocation | orphaned `BG(serialize)`? |
+|---|---|---|
+| `+32` | the parser's `zend_string` copy of the filename | **no** — the serialize had already completed and freed its context |
+| `+0..2` | a body/socket buffer | **no** |
+| `+1..4 KB` | `smart_str` growth inside `php_var_serialize()` | **yes** — `level=1` was set and its destroy never ran |
 
-On a real host with `memory_limit=256M` that produced, at a 64 MB filename:
+Measured on a live host with `memory_limit=256M`, filename 64 000 000:
 
 ```
 Fatal error: Allowed memory size of 268435456 bytes exhausted
              (tried to allocate 64000032 bytes) in Unknown on line 0
 ```
 
-`64000032` = the filename + a 32-byte `zend_string` header, i.e. the
-serializer's own copy of `progress->data`; `Unknown on line 0` places it in
-request startup. That single line proves the pre-RINIT bailout on a host you do
-not control. Whether the *next* request reuses the freed context depends on
-landing on the same worker (`pm.max_children`) and on the allocator — the
-`--fast-fires` mode sends many small fires after one arm for that reason.
+`64000032 - 64000000 = 32`, so this is the **parser's** copy and nothing was
+orphaned: gdb on the same build shows `init level=0` → `destroy level=1` → then
+the fatal. 400 follow-up requests did nothing, correctly.
+
+The same build at 256M, filename swept under gdb (`lab/sweep_arm.py`):
+
+```
+ 48 MB  no fatal                       64 MB  delta +32   not orphaned
+ 68 MB  delta +1792  orphaned          92 MB  delta  +2   not orphaned
+ 72 MB  delta +3584  orphaned         128 MB  delta  +2   not orphaned
+ 76 MB  delta +1280  orphaned
+ 80 MB  delta +3072  orphaned
+ 88 MB  delta +2560  orphaned
+```
+
+So the orphaning window is a **band** (68–88 MB here), not "anything that OOMs".
+`lab/arm_delta.py` classifies a remote fatal by its delta; `lab/sweep_arm.py`
+maps the band locally.
+
+Widening the window is not the same as crashing, and the crash needs one more
+coincidence — see §5.
 
 ## 1. The window: why this runs before RINIT
 
