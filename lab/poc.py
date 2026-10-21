@@ -113,9 +113,17 @@ def run(port: int, mem_limit: str, filename_len: int, handler: bool,
         if pad < 1:
             raise SystemExit(f"--workdir is too long ({len(workdir)} chars); pass --docroot")
         docroot = os.path.join(workdir, "d" * pad)
-    shutil.rmtree(docroot, ignore_errors=True)
+        # only ever wipe a docroot this script created itself
+        shutil.rmtree(docroot, ignore_errors=True)
+    else:
+        # never rmtree a directory the caller pointed us at: someone will pass
+        # --docroot /var/www/html and we are not going to delete their site
+        if not os.path.isdir(docroot):
+            raise SystemExit(f"--docroot {docroot} does not exist")
     os.makedirs(os.path.join(docroot, "sess"), exist_ok=True)
-    shutil.copy(os.path.join(HERE, "probe.php"), docroot)
+    probe = os.path.join(docroot, "probe.php")
+    if not os.path.exists(probe):
+        shutil.copy(os.path.join(HERE, "probe.php"), probe)
 
     sess_dir = os.path.join(docroot, "sess")
     log_path = os.path.join(workdir, "server.log")
@@ -170,7 +178,9 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="PHP session.upload_progress cross-request UAF PoC")
     ap.add_argument("--port", type=int, default=9411)
     ap.add_argument("--mem-limit", default="8M")
-    ap.add_argument("--filename-len", type=int, default=2_000_000)
+    ap.add_argument("--filename-len", type=int, default=2_000_000,
+                    help="length of the uploaded filename; a heap-shaping value, "
+                         "not just a size (2,097,152 does NOT abort on the reference build)")
     ap.add_argument("--handler", type=int, default=1, choices=(0, 1),
                     help="session.upload_progress.enabled (0 = control)")
     ap.add_argument("--workdir", default="/tmp/php-session-uaf")

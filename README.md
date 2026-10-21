@@ -1,7 +1,16 @@
 # PHP `session.upload_progress` — cross-request use-after-free
 
+[![PHP](https://img.shields.io/badge/PHP-8.2%20%7C%208.3%20%7C%208.4%20%7C%208.5-777bb4?logo=php&logoColor=white)](https://github.com/RemiPelloux/php-session-upload-progress-uaf)
+[![CWE](https://img.shields.io/badge/CWE--416-use%20after%20free-red)](https://cwe.mitre.org/data/definitions/416.html)
+[![Status](https://img.shields.io/badge/status-reproduced%20in%20lab-orange)](#verdict-at-a-glance)
+[![CVE](https://img.shields.io/badge/CVE--2026--109618%2F109619-unregistered-lightgrey)](#about-the-cve-ids)
+[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
 > A PHP worker hands a **freed** serializer context back to the next request and
 > treats it as a live `HashTable`. One request wide, pre-`RINIT`, no patch.
+
+**Fixing a host? → [REMEDIATION.md](REMEDIATION.md)** — one line, no code changes.
+**Scanning a site you own? →** `python3 tools/check_url.py https://your-site/`
 
 ```mermaid
 sequenceDiagram
@@ -23,23 +32,140 @@ sequenceDiagram
     W->>W: writes through stale HashTable → zend_mm_heap corrupted → SIGABRT
 ```
 
+## Contents
+
 | | |
 |---|---|
-| **Claimed IDs** | `CVE-2026-109618`, `CVE-2026-109619` — **not registered**. MITRE returns `CVE_RECORD_DNE`, NVD returns `totalResults: 0` (checked 2026-10-21). Treat those IDs as an unverified claim, not as an advisory. |
+| [Verdict at a glance](#verdict-at-a-glance) | what is and is not established |
+| [Am I affected?](#am-i-affected) | three conditions, two commands |
+| [Scan a URL](#scan-a-url) | stage 1, safe, and what it cannot tell you |
+| [Prove it](#prove-it-stage-2-authorised-targets-only) | stage 2, destructive, gated |
+| [Mechanism](#1-the-window-why-this-runs-before-rinit) | source walkthrough |
+| [Schema](#3-schema) | the structs, the offsets |
+| [Reproduce locally](#4-reproduce) | the lab |
+| [Heap layout](#5-why-it-does-not-always-abort) | why the abort is not guaranteed |
+| [Mitigation](REMEDIATION.md) | the fix, detection, hardening |
+| [CVE status](#about-the-cve-ids) | provenance, and why the repo is not named after the IDs |
+| [Keywords](#keywords) | search terms |
+
+## Verdict at a glance
+
+| | |
+|---|---|
+| **Claimed IDs** | `CVE-2026-109618`, `CVE-2026-109619` — **not registered**. MITRE returns `CVE_RECORD_DNE`, NVD returns `totalResults: 0` (checked 2026-10-21). |
 | **Independent status** | Mechanics reproduced on PHP 8.5.11 (Arch, `php -S`). State reuse proven deterministically; worker abort reproduced; **no code execution**. |
-| **Weakness** | CWE-416 (use after free), CWE-667 adjacent (improper locking/state ownership) |
-| **Reachable when** | `session.upload_progress.enabled=1` **and** the progress array can exhaust `memory_limit` during serialization **and** the SAPI worker survives a request-startup bailout |
-| **Patch** | none known at time of writing; stopgap below |
+| **Weakness** | CWE-416 (use after free) |
+| **Reachable when** | `session.upload_progress.enabled=1` **and** the progress array can exhaust `memory_limit` during request startup **and** the SAPI keeps the worker alive after that fatal |
+| **Impact demonstrated** | one worker aborts (`zend_mm_heap corrupted`, SIGABRT). Availability only. |
+| **Patch** | none known at time of writing; the setting is the fix — see [REMEDIATION.md](REMEDIATION.md) |
 
 Three sentences: PHP's upload-progress callback starts and flushes a session
 from inside the multipart parser, which runs **before** `PHP_RINIT_FUNCTION(basic)`
 clears the serializer globals. If that serialization dies on `memory_limit`, the
-bailout skips the cleanup, leaving `BG(serialize).level = 1` and a `data`
-pointer to a 64-byte context that gets freed at request shutdown. The next
-upload-progress request serializes before `RINIT` too, so it reuses that freed
-context without re-initialising it.
+bailout skips the cleanup, leaving `BG(serialize).level = 1` and a `data` pointer
+to a 64-byte context that gets freed at request shutdown. The next upload-progress
+request serializes before `RINIT` too, so it reuses that freed context without
+re-initialising it.
 
----
+## Am I affected?
+
+Three conditions, all required:
+
+1. `session.upload_progress.enabled = On` (upstream default: On)
+2. `memory_limit` low enough that a multipart part exhausts it during request startup
+3. the SAPI survives that startup fatal and keeps serving (php-fpm, mod_php prefork, `php -S`)
+
+```bash
+python3 tools/check_exposure.py                    # reads the ini PHP actually loads
+python3 tools/check_exposure.py /etc/php/8.4/fpm/php.ini
+```
+
+```
+VERDICT: EXPOSED
+  The upload-progress handler is on. ...
+  Fix (30 seconds):
+      session.upload_progress.enabled = Off
+```
+
+Exit code `1` when exposed, `0` when mitigated — usable in a config check.
+Full operator guidance: **[REMEDIATION.md](REMEDIATION.md)**.
+
+## Scan a URL
+
+```bash
+python3 tools/check_url.py https://staging.example.com/upload
+python3 tools/check_url.py https://staging.example.com/ --json
+```
+
+Stage 1 only. Normal-sized requests, no memory pressure, nothing that can abort
+anything. It reports:
+
+```
+ baseline      HTTP 200  31 ms
+ server        nginx/1.27.1
+ powered-by    PHP/8.5.11
+ progress      HTTP 200  28 ms
+ large part    1048576 B -> HTTP 200  accepted=True  44 ms
+
+ VERDICT       LIKELY_EXPOSED   (confidence: low)
+   - PHP 8.5.11 is one of the releases the public writeup names
+   - PHP reachable with large multipart parts. Whether the arm request can
+     exhaust memory_limit is not observable from outside; that setting decides
+     exposure. Read the ini if you own it, or use --prove under authorisation.
+```
+
+### What stage 1 can and cannot see
+
+Measured, not assumed (`docs/03-validation.md` §3.9):
+
+- **Cannot** detect the handler being on. PHP only starts a session when the
+  request already carries a session id, and then it *adopts* that id instead of
+  issuing a new cookie — so nothing changes in the response. A probe that looks
+  for `Set-Cookie` reports "not vulnerable" on a vulnerable host.
+- **Cannot** read `memory_limit`. That single value decides whether the arm
+  request can ever reach the bailout.
+- **Can** confirm PHP, the version line, and whether the edge will carry a
+  multi-megabyte multipart part at all — which is the gate the arm request has
+  to cross.
+
+So `NOT_DETECTED` and `LIKELY_EXPOSED` are both weak statements. If you own the
+host, read the ini. If you are testing under authorisation, stage 2 is the only
+definitive answer.
+
+## Prove it (stage 2, authorised targets only)
+
+```bash
+python3 tools/check_url.py http://127.0.0.1:8080/ --prove --authorized "own lab"
+python3 tools/check_url.py https://client.example/  --prove \
+        --authorized "RoE #2026-114, signed 2026-10-01" --allow-public
+```
+
+```
+ arm               HTTP 200  13 ms  (2000000 B filename, 2000299 B request)
+   memory_limit fatal in arm response: YES
+ fire              HTTP None  433 ms  error: connection closed before response headers
+ liveness after    FAILED
+
+ RESULT            WORKER_DIED
+```
+
+Four gates, deliberately:
+
+1. `--authorized "<ref>"` is required; the string is written into the JSON report.
+2. Non-loopback / non-private targets are refused unless `--allow-public`.
+3. A 3-second countdown on remote targets, `ctrl-c` to abort.
+4. Exactly two requests. No looping, no retries, no target lists.
+
+Read the result honestly — three outcomes look alike and mean different things:
+
+| RESULT | Means |
+|---|---|
+| `WORKER_DIED` | definitive: the reuse aborted the worker |
+| `OOM_REACHED_NO_ABORT` | the arm hit `memory_limit`, the fire did not trip the allocator. Either the handler is off/fixed, or the heap layout did not line up. **Indistinguishable from outside** — not a clean bill of health |
+| `SURVIVED` | the arm never exhausted memory. Says nothing about the host either |
+
+`--arm-bytes` is a heap-shaping parameter, not a "make it bigger" knob:
+`2000000` aborts on the reference build, `2**21` does not (`docs/02-heap-layout.md` §2.8).
 
 ## 1. The window: why this runs before RINIT
 
@@ -75,7 +201,20 @@ IF_SESSION_VARS() {
 php_session_flush(1);                              /* → php_session_encode() */
 ```
 
-`progress->data` contains the **uploaded filename**. Its length is fully
+One guard worth knowing, because it shapes every probe in this repo:
+
+```c
+/* Do nothing when $_POST["PHP_SESSION_UPLOAD_PROGRESS"] is not set
+ * or when we have no session id */
+if (!Z_TYPE(progress->sid) || !progress->key.s) {
+    break;
+}
+```
+
+The request must carry **both** a session id (cookie or `PHPSESSID` field) and
+the progress field, before the file part. Miss either and nothing happens at all.
+
+`progress->data` contains the **uploaded filename**. Its length is
 attacker-controlled, and it is charged to this pre-RINIT serialization.
 
 ```mermaid
@@ -94,9 +233,9 @@ flowchart LR
 
 ## 2. What the leak looks like
 
-`BG(serialize)` is a `php_serialize_data` (see the schema below). A `memory_limit`
-bailout is a `zend_bailout` — a `longjmp` — so `php_var_serialize_destroy()` is
-never reached and the destructor that would drop `level` back to 0 never runs.
+A `memory_limit` bailout is a `zend_bailout` — a `longjmp` — so
+`php_var_serialize_destroy()` is never reached and the destructor that would
+drop `level` back to 0 never runs.
 
 Measured with gdb watching `basic_globals+848 / +856 / +864`:
 
@@ -196,7 +335,7 @@ Fatal error: Allowed memory size of 8388608 bytes exhausted
 
 `Unknown on line 0` = request startup, not user code.
 
-## 5. Why it does not always abort (heap layout)
+## 5. Why it does not always abort
 
 The abort is real but **layout dependent**. The freed context is 64 bytes;
 whether anything notices depends on what reclaims it during R2's startup.
@@ -210,15 +349,14 @@ len(docroot)   20   21   22 .. 29   30   31   32
 abort rate     0/2  0/2   2/2 each   0/2  0/2  0/2
 ```
 
-Two more facts from the field:
-
-- `poc.py` therefore **spawns the server with `cwd = docroot`** and pins the
-  docroot to 28 characters. Without that, the same code fires or not depending
-  on where you launched it from — the cwd string competes for the same bin.
+- `poc.py` therefore spawns the server with `cwd = docroot` and pins the docroot
+  to 28 characters. Without that, the same code fires or not depending on where
+  you launched it from — the cwd string competes for the same bin.
 - The gdb backtrace at the abort lands on the startup path that builds the
   script path (`zend_stream_init_filename`, nearest exported symbol), i.e. the
   allocator trips exactly on the allocation that recycles the block.
-  See `evidence/abort-backtrace.txt`.
+- The arm's filename length is a heap-shaping value, not a size: `2,000,000`
+  aborts, `2,097,152` does not, on the same build.
 
 So "no abort" never means "no bug". `trace.sh` is the proof; `poc.py` is the
 demo; `sweep_docroot.py` is the map.
@@ -243,7 +381,7 @@ demo; `sweep_docroot.py` is the map.
 Stated plainly, because the public writeup this reproduces is loose about it:
 
 - **No code execution.** No forged `pDestructor`, no `zend_call_function`, no
-  `system()`. This is memory unsafety with an availability consequence.
+  `system()`. Memory unsafety with an availability consequence.
 - **No ASAN report.** No ASAN build of PHP exists on the test box (no valgrind,
   no dev headers). The writeup's headline "ASAN hit at `var.c:756`" is *not*
   independently reproduced; the same defect is shown by direct inspection of
@@ -255,28 +393,7 @@ Stated plainly, because the public writeup this reproduces is loose about it:
 - **Mitigation effectiveness is measured, not audited** — it is a config
   workaround, not a code fix.
 
-## 8. Mitigation (stopgap)
-
-```ini
-; php.ini / .user.ini — closes the path: the callback returns before it can
-; start a session (ext/session/session.c, 8.4 :3239)
-session.upload_progress.enabled = Off
-```
-
-Then reload the SAPI. Additional hardening:
-
-1. **Raise `memory_limit`** above the worst case of the progress array — the
-   filename length is attacker-controlled, so the array size is too.
-2. **Cap `upload_max_filesize` / `post_max_size`** at the edge so a single
-   request cannot build a multi-megabyte progress array.
-3. **Detect** the fingerprint in logs: `in Unknown on line 0` followed by
-   `zend_mm_heap corrupted` on the same worker.
-
-The deeper fix belongs upstream: either clear the serialize globals on bailout,
-or make `php_var_serialize_init()` re-initialise whenever the cached context is
-not provably live.
-
-## 9. About the CVE IDs
+## About the CVE IDs
 
 `CVE-2026-109618` and `CVE-2026-109619` are cited by a public writeup
 (`jackalsyn.com/posts/php-up-2026.html`) and by a downloadable bundle whose
@@ -292,19 +409,23 @@ $ curl -s 'https://services.nvd.nist.gov/rest/json/cves/2.0?cveId=CVE-2026-10961
 
 This repository deliberately **does not name itself after those IDs**: an
 unregistered identifier in a repo slug is indistinguishable from a fabricated
-advisory for anyone who finds it in a search engine. The mechanics below are
+advisory for anyone who finds it in a search engine. The mechanics above are
 what is verified; the ID attribution is not.
 
 ## Repository layout
 
 ```
 README.md                  this file
+REMEDIATION.md             operator guide: fix, verify, detect, FAQ
 docs/01-mechanism.md       source-level walkthrough of the pre-RINIT window
 docs/02-heap-layout.md     the 64-byte bin, why 22..29, what reclaims it
-docs/03-validation.md      methodology, controls, what would falsify this
-docs/04-mitigation.md      stopgap, detection, hardening
+docs/03-validation.md      methodology, claims table, what would falsify this
+docs/04-mitigation.md      longer treatment: stopgap, detection, upstream fix
+tools/check_url.py         scan a URL (stage 1 safe, stage 2 gated)
+tools/check_exposure.py    read a php.ini and say EXPOSED / MITIGATED
+tools/scan_logs.sh         grep journals for the two-line fingerprint
 lab/poc.py                 arm + fire, PASS/FAIL, portable
-lab/trace.sh, trace.gdb    deterministic proof of the cross-request reuse
+lab/trace.sh, lab/trace.gdb  deterministic proof of the cross-request reuse
 lab/matrix.sh              control matrix
 lab/sweep_docroot.py       heap-layout sensitivity map
 lab/probe.php              inert victim endpoint
@@ -317,9 +438,11 @@ evidence/                  raw output of every claim above
 `CVE-2026-109619` · `php_session_rfc1867_callback` · `php_hash_environment` ·
 `BG(serialize)` · `php_var_serialize_init` · `php_add_var_hash` · `var.c:756` ·
 `zend_mm_heap corrupted` · `CWE-416` · `PHP 8.5.11` · `PHP 8.4.26` ·
-`PHP 8.3.35` · `PHP 8.2.34` · `prefork` · `cli-server` · heap corruption PoC ·
-memory safety · Zend Engine internals · RFC1867 · upload progress RCE claim
-(retracted — memory safety only)
+`PHP 8.3.35` · `PHP 8.2.34` · `php-fpm worker crash` · `php-fpm SIGABRT` ·
+`exit code 134 php` · `in Unknown on line 0` · `prefork` · `cli-server` ·
+heap corruption PoC · memory safety · Zend Engine internals · RFC1867 ·
+upload progress RCE claim (retracted — memory safety only) · PHP hardening ·
+session.upload_progress.enabled Off
 
 ## Credits and provenance
 
@@ -327,10 +450,11 @@ memory safety · Zend Engine internals · RFC1867 · upload progress RCE claim
   research credited to Andrew Dorman (@acd421) and Arch&Yuki (@ArchKnight23).
   Their bundle is the starting point; this repo re-derives the mechanics
   independently and documents where the two disagree (`docs/03-validation.md`).
-- Independent verification, lab, and this write-up: Rémi Pelloux (OpenPro).
+- Independent verification, lab, tooling and this write-up: Rémi Pelloux (OpenPro).
 
 ## License
 
 MIT — see `LICENSE`. Provided for defensive engineering and for verifying your
-own PHP builds. Do not point this at systems you do not own or have written
-authorisation to test.
+own PHP builds. The lab only talks to `127.0.0.1`, and the URL scanner refuses
+to send an impact request without an authorisation reference. Do not point it at
+systems you do not own or have written authorisation to test.
