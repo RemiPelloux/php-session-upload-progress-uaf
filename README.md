@@ -10,7 +10,8 @@
 > treats it as a live `HashTable`. One request wide, pre-`RINIT`, no patch.
 
 **Fixing a host? → [REMEDIATION.md](REMEDIATION.md)** — one line, no code changes.
-**Scanning a site you own? →** `python3 tools/check_url.py https://your-site/`
+**Scanning sites you own or manage? →** `python3 tools/phpshell_check.py --targets sites.txt`
+([fleet guide](docs/05-fleet-check.md)) · **one host?** `python3 tools/check_url.py https://your-site/`
 
 ```mermaid
 sequenceDiagram
@@ -506,6 +507,7 @@ docs/03-validation.md      methodology, claims table, what would falsify this
 docs/04-mitigation.md      longer treatment: stopgap, detection, upstream fix
 docs/05-ps-id-stale-pointer.md  PS(id) path — OOB read primitive (CVE-2026-109619)
 docs/06-cli-rce-chain.md   nginx → php -S full RCE chain analysis
+tools/phpshell_check.py    fleet checker: fingerprint + body limit + producer (see docs/05)
 tools/check_url.py         scan a URL (stage 1 safe, stage 2 gated)
 tools/remote_probe.py      escalate the arm size on one host, then fire
 tools/check_exposure.py    read a php.ini and say EXPOSED / MITIGATED
