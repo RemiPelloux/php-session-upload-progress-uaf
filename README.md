@@ -52,7 +52,7 @@ sequenceDiagram
 
 | | |
 |---|---|
-| **Claimed IDs** | `CVE-2026-109618`, `CVE-2026-109619` — **not registered**. MITRE returns `CVE_RECORD_DNE`, NVD returns `totalResults: 0` (checked 2026-10-21). |
+| **CVE IDs** | `CVE-2026-109618`, `CVE-2026-109619` — **real, assigned, and reserved**. They are absent from NVD/MITRE *because the advisory is still embargoed*, not because they are fabricated. PHP's own security team issued an advance notice for them (CVSS v4.0 9.2 each, release 2026-10-21 14:00 UTC). |
 | **Independent status** | Mechanics reproduced on PHP 8.5.11 (Arch, `php -S`). State reuse proven deterministically; worker abort reproduced; **no code execution**. |
 | **Weakness** | CWE-416 (use after free) |
 | **Reachable when** | `session.upload_progress.enabled=1` **and** the progress array can exhaust `memory_limit` during request startup **and** the SAPI keeps the worker alive after that fatal |
@@ -442,22 +442,48 @@ Stated plainly, because the public writeup this reproduces is loose about it:
 
 ## About the CVE IDs
 
-`CVE-2026-109618` and `CVE-2026-109619` are cited by a public writeup
-(`jackalsyn.com/posts/php-up-2026.html`) and by a downloadable bundle whose
-sha256 matches the value published there. **Neither ID exists in MITRE's CVE
-Services or NVD** as of 2026-10-21:
+`CVE-2026-109618` and `CVE-2026-109619` are **real and assigned**, and one of
+them covers the mechanism described here. They are *reserved*: a reserved ID is
+invisible to every public source until the advisory is published, so the usual
+checks come back empty and look like a fabrication:
 
 ```
 $ curl -s https://cveawg.mitre.org/api/cve/CVE-2026-109618
-{"error":"CVE_RECORD_DNE", ...}
+{"error":"CVE_RECORD_DNE", ...}          <- expected while reserved
 $ curl -s 'https://services.nvd.nist.gov/rest/json/cves/2.0?cveId=CVE-2026-109618'
-{"totalResults":0, ...}
+{"totalResults":0, ...}                  <- expected while reserved
 ```
 
-This repository deliberately **does not name itself after those IDs**: an
-unregistered identifier in a repo slug is indistinguishable from a fabricated
-advisory for anyone who finds it in a search engine. The mechanics above are
-what is verified; the ID attribution is not.
+The authoritative signal is the vendor's own advance notice, published
+2026-10-20 ([php.net/archive/2026](https://www.php.net/archive/2026.php)):
+
+> The PHP security team would like to give advance notice of an upcoming
+> security release. It is scheduled for Wednesday, 21 October 2026 at 14:00 UTC.
+> It addresses two critical vulnerabilities, both rated CVSS v4.0 9.2. […]
+> We reserve the right to release earlier should details of either vulnerability
+> become public, or should evidence of active exploitation appear in the wild.
+> Full details, affected versions, and the fixed versions will be published with
+> the release.
+
+**So read this repository accordingly.** It is an independent, source-level
+analysis of the *mechanism* — published while the advisory was still embargoed,
+which is why it names the bug by its behaviour rather than by an official title.
+It does not dispute the severity the vendor assigned. Two corrections worth
+stating plainly, because earlier revisions of this file got them wrong:
+
+- "The IDs are not in NVD" is **not** evidence that the bug is fake. Reserved
+  IDs are not in NVD. The vendor notice above is the evidence, and it is real.
+- The mechanism here (`session.upload_progress`, an attacker-length filename, a
+  `memory_limit` bailout between `php_var_serialize_init/destroy`) is **one**
+  path. Two IDs exist, and mitigation guidance from the vendors states that
+  configuration alone — including `session.upload_progress.enabled=Off` — does
+  not neutralise both. Treat §What is not proven as the boundary of this repo's
+  claims, not as the boundary of the incident.
+
+This repository still deliberately **does not name itself after the IDs**: a repo
+slug carrying an unverifiable identifier is indistinguishable from a fabricated
+advisory for anyone who finds it in a search engine. Search traffic reaches it
+through the mechanism, the detection tooling, and the remediation guide.
 
 ## Repository layout
 

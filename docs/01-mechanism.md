@@ -200,7 +200,7 @@ This is why the writeup calls it "one shot", and why the PoC needs no loop.
 | Bug U = `BG(unserialize)` orphan | the `BG(serialize)` orphan is what reproduces; the unserialize half did not crash here |
 | kill receipt = SIGSEGV | `zend_mm_heap corrupted` → SIGABRT (exit 134 / -6) |
 | "cached-pointer chain" = RCE | retracted by the writeup itself (`Z_TRY_ADDREF` at `session.c:3213` keeps the array alive). Consistent with source; not re-tested |
-| two CVE IDs | neither is registered in MITRE or NVD |
+| two CVE IDs | assigned and reserved; announced by the PHP security team 2026-10-20, so absent from NVD until publication |
 
 ## 1.8 Reading list
 

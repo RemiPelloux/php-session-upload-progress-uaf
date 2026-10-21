@@ -154,7 +154,12 @@ The tool reports counts, not conclusions. Do not open an incident on one line.
 ## 6. Answers to the obvious questions
 
 **Is this a CVE?** The IDs `CVE-2026-109618` / `CVE-2026-109619` are cited by a
-public writeup but are **not registered** in MITRE or NVD. Treat them as a claim.
+published by the PHP security team in an advance notice dated 2026-10-20 (CVSS
+v4.0 9.2 each, release 2026-10-21 14:00 UTC). Absence from NVD/MITRE only reflects
+the advisory still being reserved — it is not evidence against the vulnerability.
+Note also that vendor guidance says configuration alone does not neutralise both
+issues; the settings below reduce exposure to the `session.upload_progress` path
+specifically.
 
 **Is it RCE?** No evidence. The writeup that describes it retracted its own RCE
 chain. What is reproducible is a use-after-free that aborts a worker.
