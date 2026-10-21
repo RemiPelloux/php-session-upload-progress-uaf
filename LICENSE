@@ -19,10 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----
-
-Intended use: verifying your own PHP builds and understanding the defect so it
-can be mitigated. The code only talks to 127.0.0.1 and only makes a local PHP
-worker abort. Do not point it at systems you do not own or have written
-authorisation to test.
