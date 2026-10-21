@@ -1,0 +1,11 @@
+handler ON,  mem 8M, tuned docroot       FIRED | HTTP/1.1 200 OK  oom=limit=8388608 alloc=2002944
+handler ON,  mem 8M, tuned docroot (2)   FIRED | HTTP/1.1 200 OK  oom=limit=8388608 alloc=2002944
+handler OFF, mem 8M, tuned docroot       survived | HTTP/1.1 200 OK  oom=limit=8388608 alloc=2002944
+handler ON,  mem 64M (arm cannot OOM)    survived | HTTP/1.1 200 OK  oom=no
+handler ON,  mem 1G  (arm cannot OOM)    survived | HTTP/1.1 200 OK  oom=no
+handler ON,  mem 8M, docroot len 39      survived | HTTP/1.1 200 OK  oom=limit=8388608 alloc=2002944
+
+only handler-ON + real OOM + recycled-context rows abort.
+handler off  -> arm still OOMs, no orphaned serialize state, survives.
+mem 64M/1G   -> arm never OOMs, no orphaned state, survives.
+long docroot -> same UAF, block recycled by another bin, survives.

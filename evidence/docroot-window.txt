@@ -1,0 +1,17 @@
+# docroot sweep — base=/tmp/phpuaf-window reps=2
+# len  abort/reps  docroot
+   20       0/2    /tmp/phpuaf-window/d  OK
+   21       0/2    /tmp/phpuaf-window/dd  OK
+   22       2/2    /tmp/phpuaf-window/ddd  OK
+   23       2/2    /tmp/phpuaf-window/dddd  OK
+   24       2/2    /tmp/phpuaf-window/ddddd  OK
+   25       2/2    /tmp/phpuaf-window/dddddd  OK
+   26       2/2    /tmp/phpuaf-window/ddddddd  OK
+   27       2/2    /tmp/phpuaf-window/dddddddd  OK
+   28       2/2    /tmp/phpuaf-window/ddddddddd  OK
+   29       2/2    /tmp/phpuaf-window/dddddddddd  OK
+   30       0/2    /tmp/phpuaf-window/ddddddddddd  OK
+   31       0/2    /tmp/phpuaf-window/dddddddddddd  OK
+   32       0/2    /tmp/phpuaf-window/ddddddddddddd  OK
+   33       0/2    /tmp/phpuaf-window/dddddddddddddd  OK
+   34       0/2    /tmp/phpuaf-window/ddddddddddddddd  OK

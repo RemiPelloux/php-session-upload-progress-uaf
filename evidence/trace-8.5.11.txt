@@ -1,0 +1,18 @@
+R1 : HTTP/1.1 200 OK | oom: limit=8388608 alloc=2002944
+R2.0: HTTP/1.1 200 OK
+R2.1: HTTP/1.1 200 OK
+R2.2: HTTP/1.1 200 OK
+--- trace ---
+HIT init    level=0 data=(nil) lock=0
+HIT init    level=1 data=0x7ffff4601080 lock=0
+HIT destroy level=2 data=0x7ffff4601080
+HIT init    level=1 data=0x7ffff4601080 lock=0
+HIT destroy level=2 data=0x7ffff4601080
+HIT init    level=0 data=(nil) lock=0
+HIT destroy level=1 data=0x7ffff4669040
+HIT init    level=0 data=(nil) lock=0
+HIT destroy level=1 data=0x7ffff4669040
+HIT init    level=0 data=(nil) lock=0
+HIT destroy level=1 data=0x7ffff4669040
+HIT init    level=0 data=(nil) lock=0
+HIT destroy level=1 data=0x7ffff4669040

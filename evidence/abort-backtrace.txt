@@ -1,0 +1,17 @@
+# abort backtrace (PHP 8.5.11, distro binary, no debug symbols)
+# command: gdb -q -batch -x bt.gdb --args php -n -d memory_limit=8M -d session.upload_progress.enabled=1 -S 127.0.0.1:9741 -t $DR
+# frames #3/#4 are static helper functions inside the Zend allocator that call abort().
+
+=== aborted, backtrace: 
+#0  0x00007ffff729a11c in ?? () from /usr/lib/libc.so.6
+#1  0x00007ffff723e5d0 in raise () from /usr/lib/libc.so.6
+#2  0x00007ffff7225685 in abort () from /usr/lib/libc.so.6
+#3  0x0000555555636b22 in ?? ()
+#4  0x000055555563721a in ?? ()
+#5  0x0000555555bfc1e7 in zend_stream_init_filename ()
+#6  0x0000555555c147e4 in ?? ()
+#7  0x0000555555c14acb in ?? ()
+#8  0x0000555555c1298a in ?? ()
+#9  0x0000555555c164d0 in ?? ()
+#10 0x0000555555660fe6 in ?? ()
+#11 0x00007ffff7227781 in ?? () from /usr/lib/libc.so.6

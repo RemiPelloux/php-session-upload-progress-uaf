@@ -1,0 +1,26 @@
+# environment
+PHP 8.5.11 (cli) (built: Sep 23 2026 17:41:29) (NTS)
+Copyright (c) The PHP Group
+Linux 7.2.8-9-omarchy x86_64
+
+# poc.py — fire (handler on, docroot 28)
+docroot      : len=28  (tuned)
+R1 arm       : HTTP/1.1 200 OK  oom=limit=8388608 alloc=2002944
+R2 fire      : <connection died>
+worker       : died (exit -6, signal 6)
+log          : zend_mm_heap corrupted
+VERDICT      : FIRED — heap corrupted by the reused serialize context
+
+# control — handler off
+docroot      : len=28  (tuned)
+R1 arm       : HTTP/1.1 200 OK  oom=limit=8388608 alloc=2002944
+R2 fire      : HTTP/1.1 200 OK
+worker       : survived
+VERDICT      : no abort (context was still reused; see trace.sh)
+
+# control — memory_limit high enough that the arm cannot OOM
+docroot      : len=28  (tuned)
+R1 arm       : HTTP/1.1 200 OK  oom=no
+R2 fire      : HTTP/1.1 200 OK
+worker       : survived
+VERDICT      : no abort (context was still reused; see trace.sh)
