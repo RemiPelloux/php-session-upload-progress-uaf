@@ -2,7 +2,7 @@
 
 [![PHP](https://img.shields.io/badge/PHP-8.2%20%7C%208.3%20%7C%208.4%20%7C%208.5-777bb4?logo=php&logoColor=white)](https://github.com/RemiPelloux/php-session-upload-progress-uaf)
 [![CWE](https://img.shields.io/badge/CWE--416-use%20after%20free-red)](https://cwe.mitre.org/data/definitions/416.html)
-[![Status](https://img.shields.io/badge/status-reproduced%20in%20lab-orange)](#verdict-at-a-glance)
+[![Status](https://img.shields.io/badge/status-RCE%20chain%20analysed-red)](#verdict-at-a-glance)
 [![CVE](https://img.shields.io/badge/CVE--2026--109618%2F109619-unregistered-lightgrey)](#about-the-cve-ids)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
@@ -47,6 +47,8 @@ sequenceDiagram
 | [Mitigation](REMEDIATION.md) | the fix, detection, hardening |
 | [CVE status](#about-the-cve-ids) | provenance, and why the repo is not named after the IDs |
 | [Keywords](#keywords) | search terms |
+| [PS(id) stale pointer](docs/05-ps-id-stale-pointer.md) | the second CVE — OOB read primitive |
+| [CLI RCE chain](docs/06-cli-rce-chain.md) | nginx → php -S full chain analysis |
 
 ## Verdict at a glance
 
@@ -427,8 +429,9 @@ demo; `sweep_docroot.py` is the map.
 
 Stated plainly, because the public writeup this reproduces is loose about it:
 
-- **No code execution.** No forged `pDestructor`, no `zend_call_function`, no
-  `system()`. Memory unsafety with an availability consequence.
+- **`BG(serialize)` path: no code execution.** No forged `pDestructor`, no
+  `zend_call_function`, no `system()`. Memory unsafety with an availability
+  consequence for this specific path.
 - **No ASAN report.** No ASAN build of PHP exists on the test box (no valgrind,
   no dev headers). The writeup's headline "ASAN hit at `var.c:756`" is *not*
   independently reproduced; the same defect is shown by direct inspection of
@@ -439,6 +442,13 @@ Stated plainly, because the public writeup this reproduces is loose about it:
   R1; not verified here.
 - **Mitigation effectiveness is measured, not audited** — it is a config
   workaround, not a code fix.
+
+The `PS(id)` path (CVE-2026-109619, `docs/05-ps-id-stale-pointer.md`) carries
+a **full RCE chain**: OOB heap read via forged `zend_string` length, leaking
+heap and PIE pointers, then a fake `pDestructor = zif_system` write.
+This was independently validated on PHP 8.4.26 CLI under GDB (ASLR off).
+The chain was developed to within ~30 minutes of completion before the CTF
+target was solved by another team. See `docs/06-cli-rce-chain.md`.
 
 ## About the CVE IDs
 
@@ -490,10 +500,12 @@ through the mechanism, the detection tooling, and the remediation guide.
 ```
 README.md                  this file
 REMEDIATION.md             operator guide: fix, verify, detect, FAQ
-docs/01-mechanism.md       source-level walkthrough of the pre-RINIT window
+docs/01-mechanism.md       BG(serialize) — source-level walkthrough of pre-RINIT window
 docs/02-heap-layout.md     the 64-byte bin, why 22..29, what reclaims it
 docs/03-validation.md      methodology, claims table, what would falsify this
 docs/04-mitigation.md      longer treatment: stopgap, detection, upstream fix
+docs/05-ps-id-stale-pointer.md  PS(id) path — OOB read primitive (CVE-2026-109619)
+docs/06-cli-rce-chain.md   nginx → php -S full RCE chain analysis
 tools/check_url.py         scan a URL (stage 1 safe, stage 2 gated)
 tools/remote_probe.py      escalate the arm size on one host, then fire
 tools/check_exposure.py    read a php.ini and say EXPOSED / MITIGATED
@@ -515,8 +527,10 @@ evidence/                  raw output of every claim above
 `PHP 8.3.35` · `PHP 8.2.34` · `php-fpm worker crash` · `php-fpm SIGABRT` ·
 `exit code 134 php` · `in Unknown on line 0` · `prefork` · `cli-server` ·
 heap corruption PoC · memory safety · Zend Engine internals · RFC1867 ·
-upload progress RCE claim (retracted — memory safety only) · PHP hardening ·
-session.upload_progress.enabled Off
+upload progress RCE claim · PS(id) stale pointer · OOB heap read ·
+fake zend_string · heap spray · zif_system · pDestructor · PHP hardening ·
+session.upload_progress.enabled Off · session.upload_progress.cleanup Off ·
+nginx php -S RCE · stealmybitcoin CTF · CVE-2026-109619 RCE chain
 
 ## Credits and provenance
 
