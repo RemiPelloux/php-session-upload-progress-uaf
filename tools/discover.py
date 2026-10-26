@@ -362,16 +362,29 @@ PHP_VERSIONS_VULNERABLE_TO_CVE = [
 # ---------------------------------------------------------------------------
 
 def _detect_framework(hdrs: dict, cookies_str: str, body: bytes) -> Optional[str]:
+    """Return framework key only when 2+ independent signals match — avoids false positives."""
     for fw, sig in FRAMEWORKS.items():
-        for pat in sig.get("body_patterns", []):
-            if re.search(pat, body[:20000], re.I):
-                return fw
+        score = 0
+        body_slice = body[:20000]
+        # body patterns — count matches, but each pattern counts once
+        body_hits = sum(1 for pat in sig.get("body_patterns", [])
+                        if re.search(pat, body_slice, re.I))
+        if body_hits >= 2:
+            score += 2
+        elif body_hits == 1:
+            score += 1
+        # cookie signals (strong — framework-specific names)
         for ck in sig.get("cookie_patterns", []):
             if ck.lower() in cookies_str.lower():
-                return fw
+                score += 2
+                break
+        # header signals (strong)
         for hk, hpat in sig.get("header_patterns", {}).items():
             if re.search(hpat, hdrs.get(hk, ""), re.I):
-                return fw
+                score += 2
+                break
+        if score >= 2:
+            return fw
     return None
 
 def _php_version(hdrs: dict, body: bytes) -> Optional[str]:
@@ -498,14 +511,17 @@ def run(scheme: str, host: str, port: int,
             r3 = probe(scheme, host, port, path, host_hdr)
         if r3 and r3[0] in (200, 403):
             snippet = r3[2][:120].decode(errors="replace").replace("\n"," ").strip()
-            label = f"{r3[0]}  {path}"
             if r3[0] == 200:
                 warn(sev.upper(), f"{title}  [{_c(C.GREY, snippet[:60])}]")
                 findings.append(Finding(sev, title, snippet, path))
-            else:  # 403 — exists but blocked
-                info("403", f"{path}  (exists, access denied)")
+            else:  # 403 — file exists but access blocked (still interesting!)
+                bump_sev = "high" if sev in ("critical","high") else "medium"
+                warn("403", f"{path}  EXISTS but access denied — {title}")
+                findings.append(Finding(bump_sev,
+                                        f"{title} (403 — exists, access denied)",
+                                        "Server returned 403: resource exists", path))
         else:
-            dim("ok", path)
+            dim("404", path)
 
     # ── Phase 4: framework-specific checks ────────────────────────────────
     if fw_key:
@@ -519,12 +535,16 @@ def run(scheme: str, host: str, port: int,
                 if r4[0] == 200:
                     warn(sev.upper(), f"{title}")
                     findings.append(Finding(sev, title, snippet, path))
-                elif r4[0] == 500 and "critical" in sev:
-                    info("500", f"{path}  (error — may still be relevant)")
-                else:
-                    info("403", f"{path}  (exists, access denied)")
+                elif r4[0] == 403:
+                    bump_sev = "high" if sev in ("critical","high") else "medium"
+                    warn("403", f"{path}  EXISTS — {title}")
+                    findings.append(Finding(bump_sev,
+                                            f"{title} (403 — exists, access denied)",
+                                            "Server returned 403: resource exists", path))
+                else:  # 500
+                    info("500", f"{path}  (server error — may be exploitable)")
             else:
-                dim("ok", path)
+                dim("404", path)
 
     # ── Phase 5: CVE-2026-109619 check ────────────────────────────────────
     section("CVE-2026-109619  (session.upload_progress RCE)")
@@ -603,8 +623,20 @@ def main() -> int:
     p.add_argument("--path",    help="Explicit starting path  (e.g. /app)")
     p.add_argument("--deep",    action="store_true",
                    help="Try more paths and phpinfo hunting")
-    p.add_argument("--no-anim", action="store_true",
+    p.add_argument("--no-anim",  action="store_true",
                    help="Disable animations / spinner")
+    p.add_argument("--json",     action="store_true",
+                   help="Print findings as JSON to stdout (for piping into analyze.py)")
+    p.add_argument("--json-out", metavar="FILE",
+                   help="Save findings JSON to FILE (and also run LLM if --analyze)")
+    p.add_argument("--analyze",  action="store_true",
+                   help="After scan, pipe findings into analyze.py for LLM analysis")
+    p.add_argument("--provider", default="deepseek",
+                   choices=["deepseek","openai","claude","ollama"],
+                   help="LLM provider for --analyze  (default: deepseek)")
+    p.add_argument("--key",      default=os.environ.get("LLM_API_KEY",""),
+                   help="LLM API key for --analyze (or LLM_API_KEY env var)")
+    p.add_argument("--model",    help="LLM model override for --analyze")
     args = p.parse_args()
 
     if args.no_anim or not C.on():
@@ -621,10 +653,43 @@ def main() -> int:
     base   = parsed.path or "/"
     explicit_path = args.path or (base if base != "/" else None)
 
-    banner(target_url=f"{scheme}://{host}:{port}")
+    if not args.json:
+        banner(target_url=f"{scheme}://{host}:{port}")
 
     findings = run(scheme, host, port, explicit_path, args.deep)
+
+    # JSON output
+    import dataclasses as _dc
+    findings_dict = {"target": args.url, "findings": [_dc.asdict(f) for f in findings]}
+    if args.json:
+        print(json.dumps(findings_dict, indent=2))
+        return 0
+    if args.json_out:
+        import pathlib as _pl
+        _pl.Path(args.json_out).write_text(json.dumps(findings_dict, indent=2))
+        info("json-out", args.json_out)
+
     print_summary(findings)
+
+    # LLM analysis
+    if args.analyze:
+        import subprocess as _sp, sys as _sys
+        analyze_script = str(_pl.Path(__file__).parent / "analyze.py")
+        cmd = [_sys.executable, analyze_script,
+               "--provider", args.provider,
+               "--target", args.url]
+        if args.key:  cmd += ["--key", args.key]
+        if args.model: cmd += ["--model", args.model]
+        if args.json_out:
+            cmd += ["--findings", args.json_out]
+            _sp.run(cmd)
+        else:
+            import tempfile, json as _json
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as tf:
+                _json.dump(findings_dict, tf)
+                tf.flush()
+                cmd += ["--findings", tf.name]
+            _sp.run(cmd)
 
     crit = sum(1 for f in findings if f.severity in ("critical","high"))
     return 1 if crit else 0
